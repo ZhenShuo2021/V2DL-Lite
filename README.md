@@ -1,5 +1,7 @@
 # V2DL-Lite  
-超級輕量版本的 [V2PH-Downloader](https://github.com/ZhenShuo2021/V2PH-Downloader).
+[English](/README.en.md)
+
+超級輕量版本的 [V2PH-Downloader](https://github.com/ZhenShuo2021/V2PH-Downloader)
 
 ## Why V2DL-Lite?  
 用瀏覽器自動化工具爬蟲覺得心有不甘，於是寫了一個 lite 版本。
