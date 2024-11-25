@@ -20,7 +20,7 @@ def parse_argument() -> argparse.Namespace:
 
     parser.add_argument(
         "inputs",
-        nargs="+",
+        nargs="*",
         help="URLs or text files containing URLs (one per line)",
     )
 
@@ -55,12 +55,17 @@ def parse_argument() -> argparse.Namespace:
     parser.add_argument(
         "--version",
         "-v",
-        metavar="",
+        action="store_true",
         help="Show package version",
     )
 
     args = parser.parse_args()
+
     if args.version:
         print(__version__)
         sys.exit(0)
+
+    if not args.inputs:
+        parser.error("the following arguments are required: inputs")
+
     return args
