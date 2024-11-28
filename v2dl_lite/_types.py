@@ -1,32 +1,28 @@
 from asyncio import Semaphore
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TypeAlias
 
-from cloudscraper import CloudScraper
 from httpx import AsyncClient
 
 from .constant import SPEED_LIMIT_KBPS
 
-__all__ = ["CloudScraper"]
+dl_status: TypeAlias = tuple[bool, str, str]
 
 
 @dataclass
 class DownloadConfig:
-    httpx_sess: AsyncClient
     download_dir: Path
     semaphore: Semaphore
+    session: AsyncClient
     speed_limit_kbps: int = SPEED_LIMIT_KBPS
     start_idx: int = 1
-    skip: bool = False
+    force_download: bool = False
 
 
 @dataclass
 class BaseConfig:
-    cf_sess: CloudScraper
-    httpx_sess: AsyncClient
     album_url: str
-    download_dir: Path
+    album_dir: Path
     start_page: int = 1
-    max_worker: int = 5
     download: bool = True
-    skip: bool = False

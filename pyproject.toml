@@ -9,13 +9,14 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "beautifulsoup4>=4.12.3",
     "cloudscraper>=1.2.71",
+    "colorama>=0.4.6",
     "httpx[http2]>=0.27.2",
+    "lxml>=5.3.0",
 ]
 
 [project.scripts]
-v2dl-lite = "v2dl_lite:main"
+v2dl-lite = "v2dl_lite.__main__:main"
 
 [dependency-groups]
 dev = [
@@ -65,6 +66,7 @@ disable_error_code = [
     "no-untyped-call",
     "no-any-return",
     "unused-ignore",
+    "union-attr",
 ]
 enable_error_code = ["attr-defined", "name-defined"]
 # enable_error_code = [
@@ -92,7 +94,6 @@ quote-style = "double"
 explicit-preview-rules = true
 allowed-confusables = ["，", "。", "（", "）"]
 ignore = [
-    "T201",    # flake8-print
     "E402",    # module-import-not-at-top-of-file
     "E501",    # line-too-long
     "E731",    # lambda-assignment

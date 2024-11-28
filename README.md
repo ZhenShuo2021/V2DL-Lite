@@ -21,7 +21,7 @@ v2dl-lite <url or urls.txt>
 Cookie 登入是必要的，使用 [Cookie-Editor](https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) 以 **Netscape** 格式匯出並且儲存在設定資料夾中 (預設在 `~/.config/v2dl`)。腳本會自動掃描所有包含  "**cookie**" 的 **txt** 檔案。
 
 ## 選項  
-- `-s`: 跳過已經存在的檔案 
+- `-f`: 不跳過已經存在的相簿  
 - `-d`: 設定下載資料夾 (default: `~/Downloads/v2dl`).  
 - `-c`: 設定 cookies 資料夾 (default: `~/.config/v2dl`).  
 - `-l`: 設定語言，用於命名下載資料夾 (default: `zh-TW`).  

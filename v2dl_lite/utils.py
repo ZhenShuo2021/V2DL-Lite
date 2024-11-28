@@ -1,88 +1,85 @@
 import os
 import time
 import asyncio
+import logging
 import platform
 from functools import lru_cache
-from http.cookiejar import MozillaCookieJar
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
-from urllib.parse import parse_qs, urljoin, urlsplit
+from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
 
-from bs4 import BeautifulSoup
-from cloudscraper import CloudScraper, create_scraper
 from httpx import AsyncClient, HTTPError
+from lxml import html
 
-from .constant import BASE_URL, HEADERS
+from .constant import BASE_URL, VALID_PAGE
 
 if TYPE_CHECKING:
     from requests import Response
 
+    from ._types import DownloadConfig, dl_status
 
-def create_session(
-    cookie_file: str,
-    headers: dict[str, str] | None = None,
-) -> tuple[CloudScraper, AsyncClient]:
-    cf_sess = create_scraper()
-    cookie_jar = MozillaCookieJar(cookie_file)
-    cookie_jar.load()
-    cf_sess.cookies = cookie_jar
-
-    headers = headers or HEADERS
-    cf_sess.headers.update(headers)
-
-    httpx_sess = AsyncClient(headers=headers, cookies=cookie_jar, http2=True, timeout=15)
-
-    return cf_sess, httpx_sess
+logger = logging.getLogger()
 
 
-def extract_album_urls(html_content: str) -> list[tuple[str, str]]:
-    soup = BeautifulSoup(html_content, "html.parser")
-    albums_list = soup.find("div", class_="row gutter-10 albums-list")
-    album_links = albums_list.find_all("a", class_="media-cover")
+class AlbumTracker:
+    """Download log in units of albums."""
 
+    def __init__(self, download_log: str | Path) -> None:
+        self.album_log_path = Path(download_log)
+
+    def is_downloaded(self, album_url: str) -> bool:
+        if os.path.exists(self.album_log_path):
+            with open(self.album_log_path) as f:
+                downloaded_albums = f.read().splitlines()
+            return album_url in downloaded_albums
+        return False
+
+    def log_downloaded(self, album_url: str) -> None:
+        if not self.is_downloaded(album_url):
+            with open(self.album_log_path, "a") as f:
+                f.write(album_url + "\n")
+
+
+def parse_album_urls(html_content: str) -> list[tuple[str, str]]:
+    tree = html.fromstring(html_content)
+    album_links = tree.xpath(
+        '//div[contains(@class, "row gutter-10 albums-list")]//a[contains(@class, "media-cover")]'
+    )
     result = []
     for link in album_links:
-        album_url = urljoin(BASE_URL, link["href"])
-        img_tag = link.find("img", class_="card-img-top")
-        album_alt = img_tag["alt"].strip() if img_tag and img_tag.has_attr("alt") else "Untitled"
+        album_url = urljoin(BASE_URL, link.get("href"))
+        img_tag = link.xpath('.//img[contains(@class, "card-img-top")]')
+        album_alt = img_tag[0].get("alt", "").strip() if img_tag else "Untitled"
         result.append((album_url, album_alt))
     return result
 
 
-def extract_photo_urls(html_content: str) -> list[Any]:
-    soup = BeautifulSoup(html_content, "html.parser")
-    photos_list = soup.find("div", class_="photos-list text-center")
-    photo_divs = photos_list.find_all("div", class_="album-photo my-2")
-    return [
-        img["data-src"] for div in photo_divs if (img := div.find("img")) and img.get("data-src")
-    ]
+def parse_photo_urls(html_content: str) -> list[Any]:
+    path = '//div[@class="photos-list text-center"]//div[@class="album-photo my-2"]//img/@data-src'
+    tree = html.fromstring(html_content)
+    return tree.xpath(path)
 
 
-def get_next_page_url(html_content: str) -> None | str:
-    soup = BeautifulSoup(html_content, "html.parser")
-    pagination = soup.find("ul", class_="pagination")
-    if not pagination:
-        return None
+def parse_album_title(html_content: str) -> str:
+    path = '//div[contains(@class, "card-body")]//h1[contains(@class, "h5 text-center mb-3")]'
+    tree = html.fromstring(html_content)
+    title_element = tree.xpath(path)
+    return title_element[0].text_content().strip() if title_element else ""
 
-    current_page = pagination.find("li", class_="active")
-    if not current_page:
-        return None
 
-    next_page_item = current_page.find_next_sibling("li", class_="page-item")
-    if next_page_item and next_page_item.find("a"):
-        return urljoin(BASE_URL, next_page_item.find("a")["href"])
+def parse_next_page_url(html_content: str) -> None | str:
+    path_current_page = '//ul[contains(@class, "pagination")]//li[contains(@class, "active")]'
+    path_next_page_item = 'following-sibling::li[contains(@class, "page-item")][1]/a'
+    tree = html.fromstring(html_content)
+    current_page = tree.xpath(path_current_page)
+    if current_page:
+        next_page_item = current_page[0].xpath(path_next_page_item)
+        if next_page_item:
+            return urljoin(BASE_URL, next_page_item[0].get("href"))
     return None
 
 
-def get_album_title(html: str) -> str:
-    soup = BeautifulSoup(html, "html.parser")
-    title_element = soup.select_one(".card-body h1.h5.text-center.mb-3")
-    if title_element:
-        return title_element.get_text(strip=True)
-    return ""
-
-
-def parse_url_mode(url: str, valid_pages: list[str]) -> str:
+def parse_url_mode(url: str, valid_pages: list[str] = VALID_PAGE) -> str:
     if not url.startswith(BASE_URL):
         raise ValueError(f"URL must start with {BASE_URL}, got {url}")
 
@@ -106,26 +103,51 @@ def parse_page_num(url: str) -> int:
     return int(query_params.get("page", ["1"])[0])
 
 
-def get_url(input_path: str) -> list[str]:
-    if input_path.startswith(("http://", "https://")):
+def parse_input_url(input_path: str) -> list[str]:
+    """parse argparse download inputs, accept multiple urls input or multiple txt input"""
+
+    # Check if input is a valid url, wrap it into a list
+    if is_valid_url(input_path):
         return [input_path]
 
+    # If input not a url, check if the file path exists.
+    # Validate each url if the file exists, otherwise, return an empty list.
     try:
         with open(input_path) as f:
-            return [line.strip() for line in f if line.strip()]
+            return [line.strip() for line in f if is_valid_url(line.strip())]
     except Exception:
         return []
+
+
+def is_valid_url(url: str) -> bool:
+    try:
+        result = urlparse(url)
+        return all([result.scheme, result.netloc])
+    except Exception:
+        return False
 
 
 async def download(
     semaphore: asyncio.Semaphore,
     client: AsyncClient,
     url: str,
-    download_dir_path: Path,
+    dest: Path,
     headers: dict[str, str] | None,
     speed_limit_kbps: int,
-) -> bool:
-    """Download with speed limit using an existing session."""
+) -> "dl_status":
+    """Download with speed limit using an existing session.
+
+    Args:
+        semaphore (asyncio.Semaphore): The semaphore to restrict the concurrency
+        client (httpx.AsyncClient): The request client session
+        url (str): The download url
+        dest (Path): The download destination
+        headers (dict[str, str]): The header for requests client
+        speed_limit_kbps (int): The download speed limit
+    Returns:
+        dl_status (tuple[bool, str, str]): The download status, a tuple with first term indicates
+        download status, the second term is the download url and the last term is the destination.
+    """
     if headers is None:
         headers = {}
     if speed_limit_kbps <= 0:
@@ -137,7 +159,7 @@ async def download(
     async with semaphore:
         async with client.stream("GET", url, headers=headers, timeout=30.0) as response:
             response.raise_for_status()
-            with open(download_dir_path, "wb") as file:
+            with open(dest, "wb") as file:
                 downloaded = 0
                 start_time = time.time()
 
@@ -151,13 +173,52 @@ async def download(
                     if elapsed_time < expected_time:
                         await asyncio.sleep(expected_time - elapsed_time)
 
-    if os.path.exists(download_dir_path):
-        actual_size = os.path.getsize(download_dir_path)
+    if os.path.exists(dest):
+        actual_size = os.path.getsize(dest)
         lower_bound = downloaded * 0.99
         upper_bound = downloaded * 1.01
         if lower_bound <= actual_size <= upper_bound:
-            return True
-    return False
+            return (True, url, str(dest))
+    return (False, url, str(dest))
+
+
+async def download_photos(
+    config: "DownloadConfig",
+    photo_urls: list[str],
+) -> list["dl_status"]:
+    """An async job submitter for download function"""
+
+    download_tasks = []
+    idx = config.start_idx
+
+    for photo_url in photo_urls:
+        file_name = f"{idx:03d}.{photo_url.split('.')[-1]}"
+        dest = config.download_dir / file_name
+
+        if not config.force_download:
+            if dest.is_file():
+                continue
+
+        mkdir(config.download_dir)
+
+        task = download(
+            semaphore=config.semaphore,
+            client=config.session,
+            url=photo_url,
+            dest=dest,
+            headers=dict(config.session.headers),
+            speed_limit_kbps=config.speed_limit_kbps,
+        )
+        download_tasks.append(task)
+        idx += 1
+
+    results = await asyncio.gather(*download_tasks)
+    for r in results:
+        if r[0]:
+            logger.debug(f"Download success: {r[1]}")
+        else:
+            logger.error(f"Download fail, url: {r[1]}, dest: {r[2]}")
+    return results
 
 
 def get_system_config_dir() -> Path:
@@ -169,31 +230,20 @@ def get_system_config_dir() -> Path:
     return Path(base) / "v2dl"
 
 
-def find_cookie_files(config_dir: Path) -> list[Path]:
+def find_cookie_files(config_dir: str | Path) -> list[str]:
     """Find all cookie files with 'cookie' in their names."""
+    config_dir = Path(config_dir)
     return [
-        file
+        str(file)
         for file in config_dir.iterdir()
         if file.is_file() and "cookie" in file.name and file.suffix == ".txt"
     ]
 
 
-def access_fail(response: "Response") -> None:
-    try:
-        response.raise_for_status()
-    except HTTPError as e:
-        raise AccessError(
-            f"HTTP request failed: {e}",
-            url=response.url,
-            response_status=response.status_code,
-        )
-
-    if login_fail(response):
-        raise LoginRequiredError("Login required", url=response.url)
-
-
-def login_fail(response: "Response") -> bool:
-    return response.url == urljoin(BASE_URL, "login")
+def suppress_log(log_level: int) -> None:
+    level = logging.DEBUG if log_level == logging.DEBUG else logging.WARNING
+    logging.getLogger("httpx").setLevel(level)
+    logging.getLogger("httpcore").setLevel(level)
 
 
 @lru_cache
@@ -201,12 +251,20 @@ def mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-class AccessError(Exception):
-    def __init__(self, message: str, url: str, response_status: int | None = None):
-        super().__init__(message)
-        self.url = url
-        self.response_status = response_status
+def access_fail(response: "Response", msg: str | None = None) -> None:
+    try:
+        response.raise_for_status()
+    except HTTPError as e:
+        # Only catch response error, other exceptions will be passed to upper function
+        raise HTTPError(f"HTTP request failed: {e} {msg or ''}")
+
+    if login_fail(response):
+        raise LoginRequiredError("LoginRequiredError: Login failed, please update your cookies")
 
 
-class LoginRequiredError(AccessError):
-    pass
+def login_fail(response: "Response") -> bool:
+    return response.url == urljoin(BASE_URL, "login")
+
+
+class LoginRequiredError(Exception):
+    """Check login error"""

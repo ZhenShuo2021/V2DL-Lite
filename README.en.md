@@ -19,7 +19,7 @@ Just that simple!
 Use [Cookie-Editor](https://chromewebstore.google.com/detail/cookie-editor/hlkenndednhfkekhgcdicdfddnkalmdm) to export your account cookies in **Netscape** format. Save the cookie file in the config directory (`~/.config/v2dl` by default). The script automatically scans for **txt** files with "**cookie**" in the name.
 
 ## Options  
-- `-s`: Skip already downloaded files.  
+- `-f`: Don't Skip already downloaded albums.  
 - `-d`: Specify the download directory (default: `~/Downloads/v2dl`).  
 - `-c`: Specify the cookies directory (default: `~/.config/v2dl`).  
 - `-l`: Choose a preferred language for naming folders (default: `zh-TW`). To find your language code, press F12 on the website, then search for lang="xxx".  
