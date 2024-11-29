@@ -9,7 +9,7 @@ HEADERS = {
     "Referer": BASE_URL,
     "User-Agent": UA,
     "Accept-Language": "zh-TW",
-    "connection": "keep-alive",
 }
+
 VALID_PAGE = ["album", "actor", "company", "category", "country"]
 DOWNLOAD_LOG = "downloaded_albums.txt"
