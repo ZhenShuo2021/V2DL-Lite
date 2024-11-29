@@ -1,22 +1,21 @@
 import time
 import random
 import asyncio
-from http.cookiejar import MozillaCookieJar
 from logging import getLogger
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from cloudscraper import CloudScraper, create_scraper
-from httpx import AsyncClient
-from requests.cookies import cookiejar_from_dict
-
-from ._types import BaseConfig, DownloadConfig
-from .constant import BASE_URL, DOWNLOAD_LOG, HEADERS, SLEEP_TIME
-from .utils import (
-    AlbumTracker,
+from .constant import BASE_URL, DOWNLOAD_LOG, SLEEP_TIME
+from .downloader import (
+    DownloadConfig,
     LoginRequiredError,
     access_fail,
+    create_session,
     download_photos,
+)
+from .utils import (
+    AlbumTracker,
+    BaseConfig,
     get_system_config_dir,
     parse_album_title,
     parse_album_urls,
@@ -28,9 +27,7 @@ from .utils import (
 )
 
 if TYPE_CHECKING:
-    from cloudscraper import CloudScraper
-
-    from ._types import dl_status
+    from ._types import Dl_Status, Valid_Session
 
 
 logger = getLogger()
@@ -58,8 +55,9 @@ class Scrapper:
         cookie_files: list[str] | str,
         download_dir: str,
         force_download: bool,
+        session_type: "Valid_Session",
         headers: dict[str, str],
-        max_worker: int = 5,
+        max_worker: int,
     ) -> None:
         """Initialize Scrapper
 
@@ -73,6 +71,7 @@ class Scrapper:
         self.inputs = inputs
         self.download_dir = Path(download_dir)
         self.force_download = force_download
+        self.session_type: Valid_Session = session_type  # suppress IDE
         self.headers = headers
         self.max_worker = max_worker
 
@@ -104,19 +103,32 @@ class Scrapper:
                     continue
                 await self.scrape(url)
 
-    async def scrape(self, url: str) -> list["dl_status"]:
+    async def scrape(self, url: str) -> list["Dl_Status"]:
         """Input check and error management for a single url with multiple cookie files.
 
         Args:
             url (str): The processing url
         Return:
-            dl_status: The download status, including a successful flag, url and destination
+            Dl_Status: The download status, including a successful flag, url and destination
         """
         cookie_fail = False
         mode = parse_url_mode(url)
 
         for cookie_file in self.cookie_files:
-            self.cf_sess, self.httpx_sess = Scrapper.create_session(cookie_file, self.headers)
+            # httpx can't pass cloudflare challenge
+            if self.session_type == "httpx":
+                self.cf_sess = create_session("curl", cookie_file, self.headers)
+                self.httpx_sess = create_session(self.session_type, cookie_file, self.headers)
+
+            # primp doesn't support async
+            elif self.session_type == "primp":
+                self.cf_sess = create_session(self.session_type, cookie_file, self.headers)
+                self.httpx_sess = create_session("curl", cookie_file, self.headers)
+
+            # curl-cffi support both
+            else:
+                self.cf_sess = create_session(self.session_type, cookie_file, self.headers)
+                self.httpx_sess = self.cf_sess
 
             if cookie_fail:
                 logger.info(f"Login fail. Switching to another cookie file {cookie_file}")
@@ -124,8 +136,8 @@ class Scrapper:
                 logger.debug(f"Downloading with cookie file {Path(cookie_file).name}")
 
             try:
-                self.warmup()
-                self.transfer_parameters()
+                await self.__warmup()
+                # self.__transfer_parameters()
                 return await self.scrape_selector(url=url, mode=mode)
             except LoginRequiredError as e:
                 logger.error(e)
@@ -134,18 +146,18 @@ class Scrapper:
                 raise RuntimeError(f"RuntimeError: {e}") from e
         return []
 
-    async def scrape_selector(self, url: str, mode: str) -> list["dl_status"]:
+    async def scrape_selector(self, url: str, mode: str) -> list["Dl_Status"]:
         """Select the scrape mode"""
         results = []
 
         if mode == "album":
-            response = self.cf_sess.get(url)
+            response = await self.cf_sess.get(url)
             access_fail(response)
             start_page = parse_page_num(url)
-            logger.info(f"Start scraping urls from {url}")
 
             album_alt = parse_album_title(response.text)
             album_dir = self.download_dir / album_alt
+            logger.info(f"Start scraping photos from {url}, album title: {album_alt}")
 
             base_config = BaseConfig(
                 album_url=url,
@@ -155,7 +167,7 @@ class Scrapper:
             )
             results = await self.scrape_photo_urls(base_config)
         else:
-            album_urls_with_alts = self.scrape_album_urls(self.cf_sess, url)
+            album_urls_with_alts = await self.scrape_album_urls(url)
             start_page = 1
             for album_url, album_alt in album_urls_with_alts:
                 album_dir = self.download_dir / album_alt
@@ -170,24 +182,27 @@ class Scrapper:
 
         return results
 
-    def scrape_album_urls(self, cf_sess: "CloudScraper", start_url: str) -> list[tuple[str, str]]:
+    async def scrape_album_urls(self, start_url: str) -> list[tuple[str, str]]:
         """The mode that scrape the url of albums"""
 
         current_url: str | None = start_url
         album_urls_with_alts = []
 
         while current_url:
-            response = cf_sess.get(current_url)
+            response = await self.cf_sess.get(current_url)
             access_fail(response)
 
             logger.info(f"Start scraping urls from {start_url}")
             album_urls_with_alts.extend(parse_album_urls(response.text))
             current_url = parse_next_page_url(response.text)
-            time.sleep(SLEEP_TIME)
+
+            sleep_time = random.uniform(SLEEP_TIME, SLEEP_TIME * 2)
+            logger.info(f"Sleep {sleep_time:.1f}s to avoid bot detection")
+            time.sleep(sleep_time)
 
         return album_urls_with_alts
 
-    async def scrape_photo_urls(self, config: BaseConfig) -> list["dl_status"]:
+    async def scrape_photo_urls(self, config: BaseConfig) -> list["Dl_Status"]:
         """The mode that scrape the url of photos"""
 
         idx = 10 * (config.start_page - 1) + 1  # 10 images per page
@@ -196,9 +211,9 @@ class Scrapper:
         results = []
 
         while current_url:
-            response = self.cf_sess.get(current_url)
+            response = await self.cf_sess.get(current_url)
             access_fail(response)
-            self.transfer_parameters()
+            # self.__transfer_parameters()
 
             urls = parse_photo_urls(response.text)
 
@@ -214,12 +229,15 @@ class Scrapper:
                 idx += len(urls)
 
             current_url = parse_next_page_url(response.text)
-            time.sleep(SLEEP_TIME)
+
+            sleep_time = random.uniform(SLEEP_TIME, SLEEP_TIME * 4)
+            logger.info(f"Sleep {sleep_time:.1f}s to avoid bot detection")
+            time.sleep(sleep_time)
 
         self.album_tracker.log_downloaded(config.album_url)
         return results
 
-    def warmup(self) -> None:
+    async def __warmup(self) -> None:
         warmup_times = random.randint(1, 1)
         warmup_url = [
             "https://www.v2ph.com/actor/Umi-Shinonome",
@@ -230,32 +248,12 @@ class Scrapper:
 
         logger.info("warming up session")
         for _ in range(warmup_times):
-            r = self.cf_sess.get(random.choice(warmup_url) + f"?page={random.randint(1, 20)}")
-            access_fail(r, "process: warmup")
+            r = await self.cf_sess.get(random.choice(warmup_url) + f"?page={random.randint(1, 20)}")
+            access_fail(r, "Error occurs at: warmup")
             time.sleep(random.uniform(0.1, 3.0))
 
-    def transfer_parameters(self) -> None:
+    def __transfer_parameters(self) -> None:
         self.httpx_sess.headers.update(dict(self.cf_sess.headers))  # type: ignore
         self.httpx_sess.cookies.clear()
         for k, v in dict(self.cf_sess.cookies).items():
             self.httpx_sess.cookies.set(k, v, BASE_URL)
-
-    @staticmethod
-    def create_session(
-        cookie_file: str,
-        headers: dict[str, str] | None = None,
-    ) -> tuple[CloudScraper, AsyncClient]:
-        cf_sess = create_scraper()
-        cookie_jar = MozillaCookieJar(cookie_file)
-        cookie_jar.load()
-        cookies_dict = {
-            cookie.name: cookie.value for cookie in cookie_jar if cookie.value is not None
-        }
-        cf_sess.cookies = cookiejar_from_dict(cookies_dict)
-
-        headers = headers or HEADERS
-        cf_sess.headers.update(headers)
-
-        httpx_sess = AsyncClient(headers=headers, cookies=cookie_jar, http2=True, timeout=15)
-
-        return cf_sess, httpx_sess

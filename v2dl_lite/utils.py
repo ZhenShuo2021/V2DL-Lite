@@ -1,24 +1,31 @@
 import os
-import time
-import asyncio
+import re
 import logging
 import platform
-from functools import lru_cache
+from collections.abc import Callable
+from dataclasses import dataclass
+from functools import lru_cache, wraps
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
 
-from httpx import AsyncClient, HTTPError
 from lxml import html
 
 from .constant import BASE_URL, VALID_PAGE
 
 if TYPE_CHECKING:
-    from requests import Response
-
-    from ._types import DownloadConfig, dl_status
+    pass
 
 logger = logging.getLogger()
+VALID_CLIENT = Literal["httpx", "curl", "primp"]
+
+
+@dataclass
+class BaseConfig:
+    album_url: str
+    album_dir: Path
+    start_page: int = 1
+    download: bool = True
 
 
 class AlbumTracker:
@@ -79,7 +86,7 @@ def parse_next_page_url(html_content: str) -> None | str:
     return None
 
 
-def parse_url_mode(url: str, valid_pages: list[str] = VALID_PAGE) -> str:
+def parse_url_mode(url: str, valid_pages: tuple[str, ...] = VALID_PAGE) -> str:
     if not url.startswith(BASE_URL):
         raise ValueError(f"URL must start with {BASE_URL}, got {url}")
 
@@ -127,100 +134,6 @@ def is_valid_url(url: str) -> bool:
         return False
 
 
-async def download(
-    semaphore: asyncio.Semaphore,
-    client: AsyncClient,
-    url: str,
-    dest: Path,
-    headers: dict[str, str] | None,
-    speed_limit_kbps: int,
-) -> "dl_status":
-    """Download with speed limit using an existing session.
-
-    Args:
-        semaphore (asyncio.Semaphore): The semaphore to restrict the concurrency
-        client (httpx.AsyncClient): The request client session
-        url (str): The download url
-        dest (Path): The download destination
-        headers (dict[str, str]): The header for requests client
-        speed_limit_kbps (int): The download speed limit
-    Returns:
-        dl_status (tuple[bool, str, str]): The download status, a tuple with first term indicates
-        download status, the second term is the download url and the last term is the destination.
-    """
-    if headers is None:
-        headers = {}
-    if speed_limit_kbps <= 0:
-        raise ValueError("Speed limit must be a positive number.")
-
-    chunk_size = 1024
-    speed_limit_bps = speed_limit_kbps * 1024
-
-    async with semaphore:
-        async with client.stream("GET", url, headers=headers, timeout=30.0) as response:
-            response.raise_for_status()
-            with open(dest, "wb") as file:
-                downloaded = 0
-                start_time = time.time()
-
-                async for chunk in response.aiter_bytes(chunk_size=chunk_size):
-                    if not chunk:
-                        break
-                    file.write(chunk)
-                    downloaded += len(chunk)
-                    elapsed_time = time.time() - start_time
-                    expected_time = downloaded / speed_limit_bps
-                    if elapsed_time < expected_time:
-                        await asyncio.sleep(expected_time - elapsed_time)
-
-    if os.path.exists(dest):
-        actual_size = os.path.getsize(dest)
-        lower_bound = downloaded * 0.99
-        upper_bound = downloaded * 1.01
-        if lower_bound <= actual_size <= upper_bound:
-            return (True, url, str(dest))
-    return (False, url, str(dest))
-
-
-async def download_photos(
-    config: "DownloadConfig",
-    photo_urls: list[str],
-) -> list["dl_status"]:
-    """An async job submitter for download function"""
-
-    download_tasks = []
-    idx = config.start_idx
-
-    for photo_url in photo_urls:
-        file_name = f"{idx:03d}.{photo_url.split('.')[-1]}"
-        dest = config.download_dir / file_name
-
-        if not config.force_download:
-            if dest.is_file():
-                continue
-
-        mkdir(config.download_dir)
-
-        task = download(
-            semaphore=config.semaphore,
-            client=config.session,
-            url=photo_url,
-            dest=dest,
-            headers=dict(config.session.headers),
-            speed_limit_kbps=config.speed_limit_kbps,
-        )
-        download_tasks.append(task)
-        idx += 1
-
-    results = await asyncio.gather(*download_tasks)
-    for r in results:
-        if r[0]:
-            logger.debug(f"Download success: {r[1]}")
-        else:
-            logger.error(f"Download fail, url: {r[1]}, dest: {r[2]}")
-    return results
-
-
 def get_system_config_dir() -> Path:
     """Return the config directory."""
     if platform.system() == "Windows":
@@ -251,20 +164,15 @@ def mkdir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
 
-def access_fail(response: "Response", msg: str | None = None) -> None:
-    try:
-        response.raise_for_status()
-    except HTTPError as e:
-        # Only catch response error, other exceptions will be passed to upper function
-        raise HTTPError(f"HTTP request failed: {e} {msg or ''}")
-
-    if login_fail(response):
-        raise LoginRequiredError("LoginRequiredError: Login failed, please update your cookies")
+def add_underscore_before_first_number(input_string: str) -> str:
+    return re.sub(r"(?=\d)", "_", input_string, count=1)
 
 
-def login_fail(response: "Response") -> bool:
-    return response.url == urljoin(BASE_URL, "login")
+def auto_await(func: Callable[..., Any]) -> Callable[..., Any]:
+    # TODO: blocking and run async function or run normal function
+    @wraps(func)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        result = func(*args, **kwargs)
+        raise NotImplementedError(str(result) + "auto await wrapper not yet implemented")
 
-
-class LoginRequiredError(Exception):
-    """Check login error"""
+    return wrapper

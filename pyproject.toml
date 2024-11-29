@@ -9,14 +9,22 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
-    "cloudscraper>=1.2.71",
     "colorama>=0.4.6",
     "httpx[http2]>=0.27.2",
     "lxml>=5.3.0",
+    "curl-cffi>=0.7.3",
 ]
 
 [project.scripts]
 v2dl-lite = "v2dl_lite.__main__:main"
+
+[project.optional-dependencies]
+ja4 = [
+    "primp>=0.8.1",
+]
+v2dl = [
+    "v2dl>=0.1.6",
+]
 
 [dependency-groups]
 dev = [

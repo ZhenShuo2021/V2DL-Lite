@@ -11,7 +11,7 @@
 ## Usage
 
 ```sh  
-pip install v2dl-lite  
+pip install v2dl-lite  # 使用 pip install "v2dl-lite[v2dl]" 同時安裝輕量版和原版
 v2dl-lite <url or urls.txt>  
 ```  
 
@@ -22,11 +22,12 @@ Cookie 登入是必要的，使用 [Cookie-Editor](https://chromewebstore.google
 
 ## 選項  
 - `-f`: 不跳過已經存在的相簿  
-- `-d`: 設定下載資料夾 (default: `~/Downloads/v2dl`).  
-- `-c`: 設定 cookies 資料夾 (default: `~/.config/v2dl`).  
-- `-l`: 設定語言，用於命名下載資料夾 (default: `zh-TW`).  
+- `-d`: 設定下載資料夾 (default: `~/Downloads/v2dl`)  
+- `-c`: 設定 cookies 資料夾 (default: `~/.config/v2dl`)  
+- `-l`: 設定語言，用於命名下載資料夾 (default: `zh-TW`)  
+- `-s`: 選擇客戶端會話套件，預設使用 (default: `curl`)  
 - `-v`: 顯示套件版本  
 
 ## Notes  
 - 支援多 cookies 檔案  
-- 網站的機器人檢查很嚴格，所以此版本可能需要很頻繁的更新 cookies
+- 網站的機器人檢查很嚴格，所以此版本可能需要頻繁的更新 cookies

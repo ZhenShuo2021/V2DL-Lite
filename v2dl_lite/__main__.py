@@ -1,3 +1,4 @@
+import sys
 import asyncio
 from pathlib import Path
 
@@ -28,15 +29,22 @@ Your download configuration:
 ----------------------------------------------------------
 Download base folder: {args.download_dir}
 {chr(10).join(f"Cookies file: {file}" for file in cookie_files)}
-Skipping downloaded albums? {"Yes" if args.force else "No"}
+Skipping downloaded albums? {"Yes" if not args.force else "No"}
 ----------------------------------------------------------
 """)
+
+    if sys.platform == "win32":
+        try:
+            asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+        except Exception as e:
+            logger.warning(f"Curl-cffi initialization error: {e}")
 
     scrapper = Scrapper(
         args.inputs,
         cookie_files,
         args.download_dir,
         args.force,
+        args.session,
         headers,
         max_worker,
     )

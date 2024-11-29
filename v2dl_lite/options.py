@@ -78,6 +78,14 @@ def parse_argument() -> argparse.Namespace:
     )
 
     parser.add_argument(
+        "--session",
+        "-s",
+        default="curl",
+        choices=["curl", "httpx"],
+        help="The HTTP client session to use (default: curl)",
+    )
+
+    parser.add_argument(
         "--log-level",
         default=2,
         type=int,

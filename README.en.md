@@ -9,7 +9,7 @@ This version removes bulky automation packages, complicated password setups, and
 ## Usage
 
 ```sh  
-pip install v2dl-lite  
+pip install v2dl-lite  # use `pip install "v2dl-lite[v2dl]"` to install the original v2dl
 v2dl-lite <url or urls.txt>  
 ```  
 
@@ -23,6 +23,7 @@ Use [Cookie-Editor](https://chromewebstore.google.com/detail/cookie-editor/hlken
 - `-d`: Specify the download directory (default: `~/Downloads/v2dl`).  
 - `-c`: Specify the cookies directory (default: `~/.config/v2dl`).  
 - `-l`: Choose a preferred language for naming folders (default: `zh-TW`). To find your language code, press F12 on the website, then search for lang="xxx".  
+- `-s`: Choose the backend client session package (default: `curl`)  
 - `-v`: Show the package version.  
 
 ## Notes  
