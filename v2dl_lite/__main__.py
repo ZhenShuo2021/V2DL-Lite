@@ -18,7 +18,8 @@ def main() -> int:
     suppress_log(args.log_level)
 
     if not cookie_files:
-        return 1
+        logger.warning("Can not find any cookie file")
+        cookie_files.append("")
 
     if args.language:
         headers["Accept-Language"] = args.language

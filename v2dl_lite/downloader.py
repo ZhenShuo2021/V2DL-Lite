@@ -1,4 +1,6 @@
 import os
+import re
+import sys
 import time
 import asyncio
 import logging
@@ -6,21 +8,22 @@ from abc import ABC, abstractmethod
 from collections.abc import Callable
 from dataclasses import dataclass
 from http.cookiejar import MozillaCookieJar
+from mimetypes import guess_extension
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 from urllib.parse import urljoin
 
 from httpx import AsyncClient, HTTPError
+from pathvalidate import sanitize_filename
 
 # from requests.cookies import cookiejar_from_dict
+from ._types import Dl_Status, PathType, Valid_Session
 from .constant import BASE_URL, BROWSER, HEADERS, SPEED_LIMIT_KBPS
-from .utils import add_underscore_before_first_number, auto_await, mkdir
+from .utils import add_underscore_before_first_number, auto_await
 
 if TYPE_CHECKING:
     import httpx
-    import curl_cffi.requests as curl_
-
-    from ._types import Dl_Status, Valid_Session
+    from curl_cffi.requests.models import Response as curl_Response
 
 
 logger = logging.getLogger()
@@ -46,6 +49,10 @@ class BaseResponse(ABC):
     def text(self) -> str:
         pass
 
+    @property
+    def headers(self) -> dict[Any, Any]:
+        return self.response.headers
+
     @abstractmethod
     def raise_for_status(self) -> None:
         pass
@@ -53,6 +60,11 @@ class BaseResponse(ABC):
     @property
     @abstractmethod
     def url(self) -> Any:
+        pass
+
+    @property
+    @abstractmethod
+    def response(self) -> Any:  # 定義抽象屬性，返回原始的 response 對象
         pass
 
 
@@ -68,6 +80,10 @@ class HttpxResponse(BaseResponse):
     def url(self) -> "httpx.URL":
         return self._response.url
 
+    @property
+    def response(self) -> "httpx.Response":
+        return self._response
+
     def json(self) -> Any:
         return self._response.json()
 
@@ -76,7 +92,7 @@ class HttpxResponse(BaseResponse):
 
 
 class CurlResponse(BaseResponse):
-    def __init__(self, response: "curl_.Response") -> None:
+    def __init__(self, response: "curl_Response") -> None:
         self._response = response
 
     @property
@@ -86,6 +102,10 @@ class CurlResponse(BaseResponse):
     @property
     def url(self) -> str:
         return self._response.url
+
+    @property
+    def response(self) -> "curl_Response":
+        return self._response
 
     def json(self) -> Any:
         return self._response.json()
@@ -95,7 +115,7 @@ class CurlResponse(BaseResponse):
 
 
 class PrimpResponse(BaseResponse):
-    def __init__(self, response: "curl_.Response") -> None:
+    def __init__(self, response: Any) -> None:
         self._response = response
 
     @property
@@ -105,6 +125,10 @@ class PrimpResponse(BaseResponse):
     @property
     def url(self) -> str:
         return self._response.url
+
+    @property
+    def response(self) -> Any:
+        return self._response
 
     def json(self) -> Any:
         return self._response.json()
@@ -146,14 +170,14 @@ class BaseSession(ABC):
         speed_limit_kbps: int,
         *args: Any,
         **kwargs: Any,
-    ) -> "Dl_Status":
+    ) -> Dl_Status:
         """Download with speed limit using an existing session.
 
         Args:
             semaphore (asyncio.Semaphore): The semaphore to restrict the concurrency
             client (Client): The request client session, can be a httpx/curl-cffi/primp session
             url (str): The download url
-            dest (Path): The download destination
+            dest (Path): The download destination (Note: DO NOT include extension)
             headers (dict[str, str]): The header for requests client
             speed_limit_kbps (int): The download speed limit
         Returns:
@@ -193,7 +217,7 @@ class HttpxSession(BaseSession):
         speed_limit_kbps: int,
         *args: Any,
         **kwargs: Any,
-    ) -> "Dl_Status":
+    ) -> Dl_Status:
         chunk_size = kwargs.get("chunk_size", 0)
         if speed_limit_kbps <= 0:
             raise ValueError("Speed limit must be a positive number.")
@@ -203,6 +227,9 @@ class HttpxSession(BaseSession):
         async with semaphore:
             async with self.session.stream("GET", url, timeout=30.0) as response:
                 response.raise_for_status()
+                ext = "." + DownloadPathTool.get_ext(response)  # type: ignore
+                dest = dest.with_suffix(ext)
+
                 with open(dest, "wb") as file:
                     downloaded = 0
                     start_time = time.time()
@@ -234,6 +261,7 @@ class CurlSession(BaseSession):
             self.session = AsyncSession(
                 cookies=self.cookies, headers=self.headers, timeout=15, impersonate=BROWSER
             )
+
         except ModuleNotFoundError:
             raise ImportError("curl_requests module is required for CurlCffiAdapter.")
 
@@ -258,7 +286,7 @@ class CurlSession(BaseSession):
         speed_limit_kbps: int,
         *args: Any,
         **kwargs: Any,
-    ) -> "Dl_Status":
+    ) -> Dl_Status:
         async with semaphore:
             if speed_limit_kbps <= 0:
                 raise ValueError("Speed limit must be a positive number.")
@@ -267,6 +295,8 @@ class CurlSession(BaseSession):
 
             response = await self.session.get(url, stream=True)
             response.raise_for_status()
+            ext = "." + DownloadPathTool.get_ext(response)  # type: ignore
+            dest = dest.with_suffix(ext)
 
             with open(dest, "wb") as f:
                 downloaded = 0
@@ -330,12 +360,85 @@ class PrimpSession(BaseSession):
         chunk_size: int,
         *args: Any,
         **kwargs: Any,
-    ) -> "Dl_Status":
+    ) -> Dl_Status:
         raise NotImplementedError
 
 
+class DownloadPathTool:
+    """Handles file and directory operations."""
+
+    @staticmethod
+    def mkdir(folder_path: PathType) -> None:
+        """Ensure the folder exists, create it if not."""
+        Path(folder_path).mkdir(parents=True, exist_ok=True)
+
+    @staticmethod
+    def is_file_exists(file_path: PathType, no_skip: bool, logger: logging.Logger) -> bool:
+        """Check if the file exists and log the status."""
+        if Path(file_path).exists() and not no_skip:
+            logger.info("File already exists: '%s'", file_path)
+            return True
+        return False
+
+    @staticmethod
+    def get_file_dest(
+        download_root: PathType,
+        album_name: str,
+        filename: str,
+        extension: str | None = None,
+    ) -> Path:
+        """Construct the file path for saving the downloaded file.
+
+        Args:
+            download_root (PathType): The base download folder for v2dl
+            album_name (str): The name of the download album, used for the sub-directory
+            filename (str): The name of the target download file
+            extension (str | None): The file extension of the target download file
+        Returns:
+            PathType: The full path of the file
+        """
+        ext = f".{extension}" if extension else ""
+        folder = Path(download_root) / sanitize_filename(album_name)
+        sf = sanitize_filename(filename)
+        return folder / f"{sf}{ext}"
+
+    @staticmethod
+    def get_image_ext(url: str, default_ext: str = "jpg") -> str:
+        """Get the extension of a URL."""
+        image_extensions = r"\.(jpg|jpeg|png|gif|bmp|webp|tiff|svg)(?:\?.*|#.*|$)"
+        match = re.search(image_extensions, url, re.IGNORECASE)
+        if match:
+            # Normalize 'jpeg' to 'jpg'
+            return "jpg" if match.group(1).lower() == "jpeg" else match.group(1).lower()
+        return default_ext
+
+    @staticmethod
+    def get_ext(
+        response: BaseResponse,
+        default_method: Callable[[str, str], str] | None = None,
+    ) -> str:
+        """Guess file extension based on response Content-Type."""
+        if default_method is None:
+            default_method = DownloadPathTool.get_image_ext
+
+        content_type = response.headers.get("Content-Type", "").split(";")[0].strip()
+        extension = guess_extension(content_type)
+        if extension:
+            return extension.lstrip(".")
+
+        return default_method(str(response.url), "jpg")
+
+    @staticmethod
+    def check_input_file(input_path: PathType) -> None:
+        if input_path and not os.path.isfile(input_path):
+            logging.error("Input file %s does not exist.", input_path)
+            sys.exit(1)
+        else:
+            logging.info("Input file %s exists and is accessible.", input_path)
+
+
 def create_session(
-    client: "Valid_Session",
+    client: Valid_Session,
     cookies_path: str,
     headers: dict[str, str] = HEADERS,
     timeout: int = 15,
@@ -356,21 +459,21 @@ def create_session(
 async def download_photos(
     config: "DownloadConfig",
     photo_urls: list[str],
-) -> list["Dl_Status"]:
+) -> list[Dl_Status]:
     """An async job submitter for download function"""
 
     download_tasks = []
     idx = config.start_idx
 
     for photo_url in photo_urls:
-        file_name = f"{idx:03d}.{photo_url.split('.')[-1]}"
+        file_name = f"{idx:03d}"
         dest = config.download_dir / file_name
 
         if not config.force_download:
             if dest.is_file():
                 continue
 
-        mkdir(config.download_dir)
+        DownloadPathTool.mkdir(config.download_dir)
         task = config.session.stream(
             semaphore=config.semaphore,
             client=config.session,
@@ -391,7 +494,7 @@ async def download_photos(
     return results
 
 
-def download_check(url: str, dest: str | Path, downloaded: float) -> "Dl_Status":
+def download_check(url: str, dest: str | Path, downloaded: float) -> Dl_Status:
     if os.path.exists(dest):
         actual_size = os.path.getsize(dest)
         lower_bound = downloaded * 0.9999
@@ -407,7 +510,6 @@ def prepare_session(cookie_file: str, headers: dict[str, str]) -> tuple[Any, dic
         cookie_jar.load()
         cookies_dict = {c.name: c.value for c in cookie_jar if c.value is not None}
     else:
-        logger.warning(f"cookie file not found: {cookie_file}")
         cookies_dict = {}
     # cookies = cookiejar_from_dict(cookies_dict)
     return cookies_dict, headers

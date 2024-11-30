@@ -5,6 +5,9 @@ from logging import getLogger
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from curl_cffi.requests.exceptions import HTTPError
+from httpx import HTTPStatusError
+
 from .constant import BASE_URL, DOWNLOAD_LOG, SLEEP_TIME
 from .downloader import (
     DownloadConfig,
@@ -115,21 +118,7 @@ class Scrapper:
         mode = parse_url_mode(url)
 
         for cookie_file in self.cookie_files:
-            # httpx can't pass cloudflare challenge
-            if self.session_type == "httpx":
-                self.cf_sess = create_session("curl", cookie_file, self.headers)
-                self.httpx_sess = create_session(self.session_type, cookie_file, self.headers)
-
-            # primp doesn't support async
-            elif self.session_type == "primp":
-                self.cf_sess = create_session(self.session_type, cookie_file, self.headers)
-                self.httpx_sess = create_session("curl", cookie_file, self.headers)
-
-            # curl-cffi support both
-            else:
-                self.cf_sess = create_session(self.session_type, cookie_file, self.headers)
-                self.httpx_sess = self.cf_sess
-
+            self._init_session(cookie_file)
             if cookie_fail:
                 logger.info(f"Login fail. Switching to another cookie file {cookie_file}")
             else:
@@ -139,9 +128,14 @@ class Scrapper:
                 await self.__warmup()
                 # self.__transfer_parameters()
                 return await self.scrape_selector(url=url, mode=mode)
+            # exception for `access_fail`
             except LoginRequiredError as e:
                 logger.error(e)
                 cookie_fail = True
+            # only raise error when responding an error code.
+            except (HTTPStatusError, HTTPError) as e:
+                raise LoginRequiredError(f"{e}, please check your cookie file")
+            # unexpected error
             except Exception as e:
                 raise RuntimeError(f"RuntimeError: {e}") from e
         return []
@@ -236,6 +230,22 @@ class Scrapper:
 
         self.album_tracker.log_downloaded(config.album_url)
         return results
+
+    def _init_session(self, cookie_file: str) -> None:
+        # httpx can't pass cloudflare challenge
+        if self.session_type == "httpx":
+            self.cf_sess = create_session("curl", cookie_file, self.headers)
+            self.httpx_sess = create_session(self.session_type, cookie_file, self.headers)
+
+        # primp doesn't support async
+        elif self.session_type == "primp":
+            self.cf_sess = create_session(self.session_type, cookie_file, self.headers)
+            self.httpx_sess = create_session("curl", cookie_file, self.headers)
+
+        # curl-cffi support both
+        else:
+            self.cf_sess = create_session(self.session_type, cookie_file, self.headers)
+            self.httpx_sess = self.cf_sess
 
     async def __warmup(self) -> None:
         warmup_times = random.randint(1, 1)

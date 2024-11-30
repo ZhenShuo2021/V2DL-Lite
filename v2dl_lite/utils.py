@@ -4,7 +4,7 @@ import logging
 import platform
 from collections.abc import Callable
 from dataclasses import dataclass
-from functools import lru_cache, wraps
+from functools import wraps
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 from urllib.parse import parse_qs, urljoin, urlparse, urlsplit
@@ -157,11 +157,6 @@ def suppress_log(log_level: int) -> None:
     level = logging.DEBUG if log_level == logging.DEBUG else logging.WARNING
     logging.getLogger("httpx").setLevel(level)
     logging.getLogger("httpcore").setLevel(level)
-
-
-@lru_cache
-def mkdir(path: Path) -> None:
-    path.mkdir(parents=True, exist_ok=True)
 
 
 def add_underscore_before_first_number(input_string: str) -> str:

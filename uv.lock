@@ -1066,6 +1066,7 @@ dependencies = [
     { name = "curl-cffi" },
     { name = "httpx", extra = ["http2"] },
     { name = "lxml" },
+    { name = "pathvalidate" },
 ]
 
 [package.optional-dependencies]
@@ -1094,6 +1095,7 @@ requires-dist = [
     { name = "curl-cffi", specifier = ">=0.7.3" },
     { name = "httpx", extras = ["http2"], specifier = ">=0.27.2" },
     { name = "lxml", specifier = ">=5.3.0" },
+    { name = "pathvalidate", specifier = ">=3.2.1" },
     { name = "primp", marker = "extra == 'ja4'", specifier = ">=0.8.1" },
     { name = "v2dl", marker = "extra == 'v2dl'", specifier = ">=0.1.6" },
 ]
