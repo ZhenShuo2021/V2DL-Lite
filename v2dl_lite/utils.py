@@ -62,7 +62,7 @@ def parse_album_urls(html_content: str) -> list[tuple[str, str]]:
 
 
 def parse_photo_urls(html_content: str) -> list[Any]:
-    path = '//div[@class="photos-list text-center"]//div[@class="album-photo my-2"]//img/@data-src'
+    path = '//div[@class="photos-list text-center"]//div[@class="album-photo my-2"]//img/@src'
     tree = html.fromstring(html_content)
     return tree.xpath(path)
 
